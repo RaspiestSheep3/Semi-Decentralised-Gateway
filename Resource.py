@@ -560,6 +560,27 @@ def AssignFilesToSQL(acceptedLevels : list, filePath : str = None, folderPath : 
     
     conn.close()
 
+#CLI
+started = False
+while True:
+    userInput = input(">>").split("---")
+    if(userInput[0] == ".start"):
+        if(started):
+            print("Already started!")
+        else:
+            threading.Thread(target=Start).start()
+            started = True
+    
+    elif(userInput[0] == ".assign"):
+        levels = userInput[1].split("|")
+        filePath = userInput[2] if userInput[2] != "None" else None
+        folderPath = userInput[3] if len(userInput) > 3 else None
+        
+        if(folderPath == None):
+            AssignFilesToSQL(levels, None, folderPath)
+        else:
+            AssignFilesToSQL(levels, filePath)
+        
+
 #AssignFilesToSQL(["Engineering LVL1, Engineering LVL2"], None, r"C:\Users\iniga\OneDrive\Programming\Testing")    
-Start()
 #AssignFilesToSQL(["Engineering LVL1"], "C:\\Users\\iniga\\OneDrive\\Programming\\StunTest.py")

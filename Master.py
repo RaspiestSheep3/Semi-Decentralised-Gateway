@@ -5,6 +5,7 @@ import base64
 import logging
 import keyring
 import colorlog
+from datetime import datetime
 from argon2 import PasswordHasher
 from werkzeug.utils import secure_filename
 from cryptography.hazmat.primitives import hashes
@@ -17,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, x25519
 
 #Global variables
 privateKey, publicKey = None, None
+loggedIn = False
 
 #Logging setup
 logFormatter = colorlog.ColoredFormatter(
@@ -207,9 +209,11 @@ def CreateClientLogin(clientID, clientPassword):
     keyring.set_password("Decentralised-File-System", clientID, ph.hash(clientPassword))
 
 def AttemptMasterLogin(password):
+    global loggedIn
     passwordHash = keyring.get_password("Decentralised-File-System", "master")
     ph = PasswordHasher()
     ph.verify(passwordHash, password)
+    loggedIn = True
 
 #Test certificate creation
 """CreateUserCertificate("John Smith", 
@@ -242,9 +246,7 @@ logPrivateKey, logPublicKey = CreateLogKey()
 #WizardInitialisation("TestMasterPassword")
 
 #CreateClientLogin("JohnSmith1", "John123")
-AttemptMasterLogin("T")
-
-#DecodeLog("Resource1FileInfo.txt")
+#AttemptMasterLogin("T")
 
 """CreateUserCertificate(
     "John Smith", 
@@ -257,9 +259,10 @@ AttemptMasterLogin("T")
     "RS3",
     "29/12/25",
     12345,
-    1)
+    1)"""
 
-CreateResourceCertificate(
+
+"""CreateResourceCertificate(
     "Management Resource",
     "ManagementResource1",
     "C:\\Users\\iniga\\OneDrive\\Programming\\Gateway\\ResourceECCPublicKey.pem",
@@ -269,3 +272,57 @@ CreateResourceCertificate(
     "01/01/30",
     12345,
     1)"""
+
+#CLI
+while True:
+    userInput = input(">>").split("---")
+    if(userInput[0] == ".login"):
+        AttemptMasterLogin(userInput[1])
+    elif(loggedIn):
+        if(userInput[0] == ".cuc"):
+            name = input("Name : ")
+            id = input("ID : ")
+            title = input("Title : ")
+            publicKeyPath = input("Public Key Path : ")
+            levelsRaw = input("Levels : ").split("|")
+            levels = []
+            for levelRaw in levelsRaw:
+                levels.append(levelRaw.split(":"))
+            expiryDate = input("Expiry Date : ")
+            algorithmUsed  = input("Algorithm used : ")
+            issuerID = input("Issuer ID : ")
+            issueDate = datetime.now().strftime("dd/mm/YY")
+            serial = int(input("Serial : "))
+            version = int(input("Version : "))
+            CreateUserCertificate(
+                name, id, title,
+                publicKeyPath, levels, expiryDate,
+                algorithmUsed, issuerID, issueDate,
+                serial, version
+            )
+        elif(userInput[0] == ".crc"):
+            name = input("Name : ")
+            id = input("ID : ")
+            publicKeyPath = input("Public Key Path : ")
+            expiryDate = input("Expiry Date : ")
+            algorithmUsed  = input("Algorithm used : ")
+            issuerID = input("Issuer ID : ")
+            issueDate = datetime.now().strftime("dd/mm/YY")
+            serial = int(input("Serial : "))
+            version = int(input("Version : "))
+            
+            CreateResourceCertificate(
+                name, id, publicKeyPath,
+                algorithmUsed, issuerID, issueDate,
+                expiryDate, serial, version
+            )
+        
+        elif(userInput[0] == ".ccl"):
+            id = input("Client ID : ")
+            password = input("Client Password : ")
+            CreateClientLogin(id, password)
+        
+        elif(userInput[0] == ".decode"):
+            DecodeLog(input("Log Path : "))   
+    else:
+        print("Log in first!")

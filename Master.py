@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import base64
 import logging
@@ -11,6 +12,8 @@ from cryptography.hazmat.primitives.asymmetric import ec, x25519
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, x25519
 
 #Global variables
 privateKey, publicKey = None, None
@@ -55,31 +58,22 @@ logger.addHandler(generalLogHandler)
 logger.addHandler(errorLogHandler) 
 
 #Keypair generation
-def CreateECCKeypair():
-    privateKey = ec.generate_private_key(ec.SECP256R1())
-    publicKey = privateKey.public_key()
-
-    pemPrivate = privateKey.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()  
-    )
-    with open("MasterECCPrivateKey.pem", "wb") as f:
-        f.write(pemPrivate)
-        
-    pemPublic = publicKey.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-    with open("MasterECCPublicKey.pem", "wb") as f:
-        f.write(pemPublic)
-    return privateKey, publicKey
-
-def CreateUserCertificate(name : str, ID : str, title : str, publicKeyBytesB64 : str, permissions : list, expiryDate : str, loginDays : dict, startTime : str, endTime : str, algorithmUsed : str, issuerID : str, issueDate : str, serial : int, version : int):
+def CreateUserCertificate(name : str, ID : str, title : str, publicKeyPath : str, permissions : list, expiryDate : str, algorithmUsed : str, issuerID : str, issueDate : str, serial : int, version : int):
     permissionsDict = dict()
     
     for permission in permissions:
         permissionsDict[permission[0]] = permission[1]
+        
+    with open(publicKeyPath, "rb") as f:
+        pemPublic = f.read()
+
+    publicKey = serialization.load_pem_public_key(pemPublic)
+
+    publicDer = publicKey.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    publicKeyBytesB64 = base64.b64encode(publicDer).decode()
     
     userDict = {
         "Name" : name,
@@ -88,22 +82,11 @@ def CreateUserCertificate(name : str, ID : str, title : str, publicKeyBytesB64 :
         "Public Key" : publicKeyBytesB64,
         "Permissions" : permissionsDict,
         "Expiry Date" : expiryDate,
-        "Login Days" : {
-            "Mon" : loginDays["Mon"],
-            "Tue" : loginDays["Tue"],
-            "Wed" : loginDays["Wed"],
-            "Thu" : loginDays["Thu"],
-            "Fri" : loginDays["Fri"],
-            "Sat" : loginDays["Sat"],
-            "Sun" : loginDays["Sun"]
-        },
-        "Start Time" : startTime,
-        "End Time" : endTime,
         "Algorithm Used" : algorithmUsed,
         "Issuer" : issuerID,
         "Issue Date" : issueDate,
         "Serial" : serial,
-        "Certifiate Version" : version
+        "Certificate Version" : version
     }
     
     #Signing the user
@@ -116,7 +99,19 @@ def CreateUserCertificate(name : str, ID : str, title : str, publicKeyBytesB64 :
     with open(f"User{secure_filename(ID)}Certificate.json", "w") as f:
         json.dump(userDict, f, indent=4)
 
-def CreateResourceCertificate(name : str, ID : str, publicKeyBytesB64 : str, algorithmUsed : str, issuerID : str, issueDate : str, expiryDate : str, serial : int, version : int, ):
+def CreateResourceCertificate(name : str, ID : str, publicKeyPath : str, algorithmUsed : str, issuerID : str, issueDate : str, expiryDate : str, serial : int, version : int, ):
+    
+    with open(publicKeyPath, "rb") as f:
+        pemPublic = f.read()
+
+    publicKey = serialization.load_pem_public_key(pemPublic)
+
+    publicDer = publicKey.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    publicKeyBytesB64 = base64.b64encode(publicDer).decode()
+    
     resourceDict = {
         "Name" : name,
         "ID" : ID,
@@ -126,7 +121,7 @@ def CreateResourceCertificate(name : str, ID : str, publicKeyBytesB64 : str, alg
         "Issue Date" : issueDate,
         "Expiry" : expiryDate,
         "Serial" : serial,
-        "Certifiate Version" : version,
+        "Certificate Version" : version,
     }
     
     signatureBytes = privateKey.sign(
@@ -139,7 +134,7 @@ def CreateResourceCertificate(name : str, ID : str, publicKeyBytesB64 : str, alg
         json.dump(resourceDict, f, indent=4)
 
 if(not os.path.exists("MasterECCPrivateKey.pem")):
-   privateKey, publicKey = CreateECCKeypair() 
+   logger.critical("No keypair exists!")
 else:
     with open("MasterECCPrivateKey.pem", "rb") as f:
         privateKey = serialization.load_pem_private_key(
@@ -211,12 +206,6 @@ def CreateClientLogin(clientID, clientPassword):
     ph = PasswordHasher()
     keyring.set_password("Decentralised-File-System", clientID, ph.hash(clientPassword))
 
-def WizardInitialisation(masterPassword):
-    ph = PasswordHasher()
-    keyring.set_password("Decentralised-File-System", "master", ph.hash(masterPassword))
-
-    CreateECCKeypair()
-
 def AttemptMasterLogin(password):
     passwordHash = keyring.get_password("Decentralised-File-System", "master")
     ph = PasswordHasher()
@@ -253,6 +242,30 @@ logPrivateKey, logPublicKey = CreateLogKey()
 #WizardInitialisation("TestMasterPassword")
 
 #CreateClientLogin("JohnSmith1", "John123")
-AttemptMasterLogin("TestMasterPassword")
+AttemptMasterLogin("T")
 
-DecodeLog("Resource1FileInfo.txt")
+#DecodeLog("Resource1FileInfo.txt")
+
+"""CreateUserCertificate(
+    "John Smith", 
+    "JohnSmith1", 
+    "Head Engineer", 
+    "C:\\Users\\iniga\\OneDrive\\Programming\\Gateway\\NonePublicKey.pem", 
+    [["Engineering LVL1", "WRITE"],["Engineering LVL2", "WRITE"],["Management LVL1", "READ"]], 
+    "01/01/30", 
+    "ECDSA",
+    "RS3",
+    "29/12/25",
+    12345,
+    1)
+
+CreateResourceCertificate(
+    "Management Resource",
+    "ManagementResource1",
+    "C:\\Users\\iniga\\OneDrive\\Programming\\Gateway\\ResourceECCPublicKey.pem",
+    "ECDSA",
+    "RS3",
+    "29/12/25",
+    "01/01/30",
+    12345,
+    1)"""

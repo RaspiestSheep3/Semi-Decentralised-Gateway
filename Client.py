@@ -247,11 +247,13 @@ def UploadFileToResource(aes, sessionToken, filePath):
     
     logger.debug(f"File path : {filePath}")
     
+    print(f"Filesize : {fileSize}, {os.path.getsize(filePath)}, bS : {bytesSent}")
+    
     with open(filePath, "rb") as f:
         while(bytesSent < fileSize):
             decryptedBlock = f.read(min(65536, fileSize - bytesSent))
             encryptedBlock = aes.encrypt(IncrementNonce(requestNonce, nonceCounter), decryptedBlock, None)
-            print(f"Encrypt len : {len(encryptedBlock)}")
+            print(f"Encrypt len : {len(encryptedBlock)}, decrypt len : {len(decryptedBlock)}")
             resourceSocket.send(encryptedBlock)
             bytesSent += min(65536, fileSize - bytesSent)
             nonceCounter += 1   
@@ -309,7 +311,7 @@ def LoginUser(username, password):
         logger.warning("Login Failed")
         return
     
-    certPath = f"User{userID}Certficate.json"
+    certPath = os.path.join(os.getcwd(), f"User{username}Certificate.json")
 
 resourceSocket, aes, privateKey, publicKey, privateKeyBytes, publicKeyBytes = None, None, None, None, None, None
 
@@ -343,8 +345,8 @@ def Start():
     #Resrouce ephmeral pair
     privateEphemeralKey, _, _, publicEphemeralKeyBytes = CreateEphemeralECCKeypair()
     aes, sessionToken = ConnectToResource(privateEphemeralKey, publicEphemeralKeyBytes)
-    #RequestFileFromResource(aes, sessionToken, "Test PDF.pdf")
-    UploadFileToResource(aes, sessionToken, r"C:\Users\iniga\OneDrive\Programming\StunTest.py")
+    #RequestFileFromResource(aes, sessionToken, "StunTest.py")
+    #UploadFileToResource(aes, sessionToken, "C:\\Users\\iniga\\OneDrive\\Programming\\StunTest.py")
     DeleteFileFromResource(aes, sessionToken, "StunTest.py")
 
 LoginUser("JohnSmith1", "John123")

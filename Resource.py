@@ -7,6 +7,7 @@ import logging
 import sqlite3
 import colorlog
 import threading
+from time import sleep
 from cryptography.hazmat.primitives import hashes
 from cryptography.exceptions import InvalidSignature
 from datetime import datetime, timezone, timedelta, date
@@ -232,7 +233,7 @@ def HandleClient(clientSocket):
 
         #Cert expiry check
         clientCertExpiryTimeSplit = clientCertInfo["Expiry Date"].split("/")
-        clientCertExpiryTime = date(int(clientCertExpiryTimeSplit[2]), int(clientCertExpiryTimeSplit[1]), int(clientCertExpiryTimeSplit[0]))
+        clientCertExpiryTime = date(int("20" + clientCertExpiryTimeSplit[2]), int(clientCertExpiryTimeSplit[1]), int(clientCertExpiryTimeSplit[0]))
         if(clientCertExpiryTime < date.today()):
             AddEncryptedLog("WARNING", f"Client {clientCertInfo["ID"]} is signing in with an expired cert")
             return
@@ -410,7 +411,7 @@ def HandleClient(clientSocket):
             if(status == "Allowed"):
                 metadata = {}
         else:
-            logger.debug(f"row : {row}, levels : {acceptedLevels}")
+            logger.warning(f"row : {row}, levels : {userToken["Permissions"]}")
                 
         requestResponse = {"Status" : status, "Metadata" : metadata}
         requestResponseEncrypted = aes.encrypt(IncrementNonce(requestNonce, 2), json.dumps(requestResponse).encode(), None)
@@ -473,7 +474,7 @@ def HandleClient(clientSocket):
             if(status == "Allowed"):
                 metadata = {}
         else:
-            logger.debug(f"row : {row}, levels : {acceptedLevels}")
+            logger.warning(f"row : {row}, levels : {userToken["Permissions"]}")
                 
         requestResponse = {"Status" : status, "Metadata" : metadata}
         requestResponseEncrypted = aes.encrypt(IncrementNonce(requestNonce, 3), json.dumps(requestResponse).encode(), None)
@@ -484,6 +485,10 @@ def HandleClient(clientSocket):
         
         fileSize = int.from_bytes(aes.decrypt(IncrementNonce(requestNonce, 2), base64.b64decode(receivedMessage["File Size"]), None), byteorder="big")
         bytesToReceive = fileSize
+        logger.debug(f"File Size : {fileSize}")
+        
+        sleep(0.5)
+        
         incrementCounter = 4
         with open(row[1], "wb") as f:
             while(bytesToReceive > 0):
@@ -557,4 +562,4 @@ def AssignFilesToSQL(acceptedLevels : list, filePath : str = None, folderPath : 
 
 #AssignFilesToSQL(["Engineering LVL1, Engineering LVL2"], None, r"C:\Users\iniga\OneDrive\Programming\Testing")    
 Start()
-#AssignFilesToSQL(["Management LVL1"], "C:\\Users\\iniga\\OneDrive\\Programming\\ScapyFilter.py")
+#AssignFilesToSQL(["Engineering LVL1"], "C:\\Users\\iniga\\OneDrive\\Programming\\StunTest.py")

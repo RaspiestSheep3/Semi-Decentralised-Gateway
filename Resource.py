@@ -19,8 +19,6 @@ from cryptography.hazmat.primitives.asymmetric import ec, x25519
 #Constants
 INCOMING_CONNECTION_HOST = "0.0.0.0"
 INCOMING_CONNECTION_PORT = 12345
-RESOURCE_LABEL = "Resource1"
-CERT_PATH = "ResourceManagementResource1Certificate.json"
 MASTER_PUBLIC_KEY_PEM = "MasterECCPublicKey.pem"
 SESSION_TOKEN_EXPIRY_TIME = timedelta(minutes=30)
 
@@ -29,6 +27,8 @@ loadedAES = dict()
 privateKey, privateKeyBytes, publicKey, publicKeyBytes = None, None, None, None
 masterKey = None
 logKey = None
+resourceLabel = ""
+certPath = ""
 
 #Logging setup
 logFormatter = colorlog.ColoredFormatter(
@@ -130,7 +130,7 @@ def LoadLogEncryptor():
         info=b"Log Encryption"
     ).derive(sharedSecret)
     
-    with open(f"{RESOURCE_LABEL}FileInfo.txt", "w") as f:
+    with open(f"{resourceLabel}FileInfo.txt", "w") as f:
        f.write(f"Ephemeral Public Key - {base64.b64encode(ephemeralPublicKey.public_bytes_raw()).decode()}\n")
     
     return AESGCM(derivedKey)
@@ -140,7 +140,7 @@ def AddEncryptedLog(level : str, messageToLog : str):
     
     nonce = os.urandom(12)
     ciphertext = logKey.encrypt(nonce, message, None)
-    with open(f"{RESOURCE_LABEL}FileInfo.txt", "a") as f:
+    with open(f"{resourceLabel}FileInfo.txt", "a") as f:
         f.write(f"{base64.b64encode(nonce).decode()} - {base64.b64encode(ciphertext).decode()}\n")
     
 
@@ -157,14 +157,14 @@ def Start():
     incomingConnectionSocket.bind((INCOMING_CONNECTION_HOST, INCOMING_CONNECTION_PORT))
     incomingConnectionSocket.listen(5)
     
-    if(os.path.isfile(f"{RESOURCE_LABEL}ECCPrivateKey.pem") and os.path.isfile(f"{RESOURCE_LABEL}ECCPublicKey.pem")):
-        with open(f"{RESOURCE_LABEL}ECCPrivateKey.pem", "rb") as f:
+    if(os.path.isfile(f"{resourceLabel}ECCPrivateKey.pem") and os.path.isfile(f"{resourceLabel}ECCPublicKey.pem")):
+        with open(f"{resourceLabel}ECCPrivateKey.pem", "rb") as f:
             privateKey = serialization.load_pem_private_key(
                 f.read(),
                 password=None 
             )
                 
-        with open(f"{RESOURCE_LABEL}ECCPublicKey.pem", "rb") as f:
+        with open(f"{resourceLabel}ECCPublicKey.pem", "rb") as f:
             publicKey = serialization.load_pem_public_key(f.read())
         
         privateKeyBytes = privateKey.private_bytes(
@@ -252,7 +252,7 @@ def HandleClient(clientSocket):
         #Sending our cert
         returnNonce = IncrementNonce(nonce, 1)
         
-        with open(CERT_PATH, "r") as fileHandle:
+        with open(certPath, "r") as fileHandle:
             certInfo = json.loads(fileHandle.read())
 
         #Transmission of cert
@@ -316,7 +316,7 @@ def HandleClient(clientSocket):
             return
         
         #Checking if the user has correct level permissions for the file they are requesting
-        conn = sqlite3.connect(f"{RESOURCE_LABEL}.db")
+        conn = sqlite3.connect(f"{resourceLabel}.db")
         cursor = conn.cursor()
         cursor.execute("""SELECT * FROM resourceFiles WHERE fileLabel = ?""", (fileID,))
         row = cursor.fetchone()
@@ -393,7 +393,7 @@ def HandleClient(clientSocket):
             return
         
         #Checking if the user has correct level permissions for the file they are requesting
-        conn = sqlite3.connect(f"{RESOURCE_LABEL}.db")
+        conn = sqlite3.connect(f"{resourceLabel}.db")
         cursor = conn.cursor()
         cursor.execute("""SELECT * FROM resourceFiles WHERE fileLabel = ?""", (fileID,))
         row = cursor.fetchone()
@@ -456,7 +456,7 @@ def HandleClient(clientSocket):
             return
         
         #Checking if the user has correct level permissions for the file they are requesting
-        conn = sqlite3.connect(f"{RESOURCE_LABEL}.db")
+        conn = sqlite3.connect(f"{resourceLabel}.db")
         cursor = conn.cursor()
         cursor.execute("""SELECT * FROM resourceFiles WHERE fileLabel = ?""", (fileID,))
         row = cursor.fetchone()
@@ -501,6 +501,44 @@ def HandleClient(clientSocket):
         
         logger.info(f"All blocks received - now closing")
         AddEncryptedLog("INFO", f"SUCESS : {userToken["ID"]} requested upload of {fileID}")
+    
+    elif(receivedMessage["Type"] == "File Availability Request"):
+        requestNonce = base64.b64decode(receivedMessage["Nonce"])
+        aes = loadedAES[receivedMessage["ID"]]
+        userToken = json.loads(aes.decrypt(requestNonce, base64.b64decode(receivedMessage["Token"]), None).decode())
+
+        #Checking the signature is intact
+        signatureRaw = base64.b64decode(userToken["Signature"])
+        
+        userToken.pop("Signature")
+        
+        try:
+            publicKey.verify(
+                signatureRaw,
+                json.dumps(userToken).encode(),
+                ec.ECDSA(hashes.SHA256())
+            )
+        
+            logger.debug("Signature correct")
+        
+        except InvalidSignature:
+            logger.warning("Signature invalid")
+            return
+        
+        #Checking the timestamp on the token
+        if(int(datetime.now(timezone.utc).timestamp()) > userToken["Expiry Time"]):
+            logger.warning(f"Time expired on token")
+            return
+     
+        conn = sqlite3.connect(f"{resourceLabel}.db")
+        cursor = conn.cursor()
+        cursor.execute("""SELECT * FROM resourceFiles""")
+        rows = cursor.fetchall()
+        results = [row[0] for row in rows]
+        
+        requestResponse = {"ID" : resourceLabel, "Results" : results}
+        requestResponseEncrypted = aes.encrypt(IncrementNonce(requestNonce, 2), json.dumps(requestResponse).encode(), None)
+        clientSocket.send(requestResponseEncrypted.ljust(1024, b"\0"))
         
     #Closing the socket
     clientSocket.shutdown(socket.SHUT_RDWR)
@@ -518,7 +556,7 @@ def AssignFilesToSQL(acceptedLevels : list, filePath : str = None, folderPath : 
     #This function can be called to bulk add files in a folder to the SQL   
     acceptedLevels = "|".join(acceptedLevels)
     
-    conn = sqlite3.connect(f"{RESOURCE_LABEL}.db")
+    conn = sqlite3.connect(f"{resourceLabel}.db")
     cursor = conn.cursor()
     
     cursor.execute("""
@@ -580,6 +618,10 @@ while True:
             AssignFilesToSQL(levels, None, folderPath)
         else:
             AssignFilesToSQL(levels, filePath)
+    
+    elif(userInput[0] == ".setVariables"):
+        resourceLabel = userInput[1]
+        certPath = userInput[2]
         
 
 #AssignFilesToSQL(["Engineering LVL1, Engineering LVL2"], None, r"C:\Users\iniga\OneDrive\Programming\Testing")    

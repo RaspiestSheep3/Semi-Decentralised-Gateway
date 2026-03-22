@@ -3,6 +3,7 @@ import os
 import json
 import socket
 import base64
+import sqlite3
 import logging
 import keyring
 import colorlog
@@ -16,12 +17,13 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 #Constants
 INCOMING_CONNECTION_HOST = "0.0.0.0"
 INCOMING_CONNECTION_PORT = 12346
-SERVER_CONNECTION_PORT = 12345
 MASTER_PUBLIC_KEY_PEM = "MasterECCPublicKey.pem"
+CLIENT_DATABASE = "ClientDatabase.db"
 
 #Runtime variables
 userID = None
 certPath = None
+loggedIn = False
 
 #Logging setup
 logFormatter = colorlog.ColoredFormatter(
@@ -106,10 +108,10 @@ def CreateECCKeypair():
 
 #Setting up a connection to the Resource
 
-def ConnectToResource(privateEphemeralKey, publicEphemeralKeyBytes): 
+def ConnectToResource(privateEphemeralKey, publicEphemeralKeyBytes, connectionPort): 
     global userID
     resourceSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    resourceSocket.connect(("127.0.0.1", SERVER_CONNECTION_PORT))
+    resourceSocket.connect(("127.0.0.1", connectionPort))
     
     ephemeralKeyData = json.dumps({"Type" : "Client-Resource Ephemeral Key Transmission", "publicEphemeralKey" : base64.b64encode(publicEphemeralKeyBytes).decode()})
     resourceSocket.send(ephemeralKeyData.encode().ljust(1024, b"\0"))
@@ -179,10 +181,10 @@ def ConnectToResource(privateEphemeralKey, publicEphemeralKeyBytes):
     
     return aes, sessionToken
 
-def RequestFileFromResource(aes, sessionToken, fileID):
+def RequestFileFromResource(aes, sessionToken, fileID, connectionPort):
     #Defining the connection
     resourceSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    resourceSocket.connect(("127.0.0.1", SERVER_CONNECTION_PORT))
+    resourceSocket.connect(("127.0.0.1", connectionPort))
     
     #Filing the request
     requestNonce = os.urandom(12)
@@ -218,9 +220,9 @@ def RequestFileFromResource(aes, sessionToken, fileID):
     resourceSocket.shutdown(socket.SHUT_RDWR)
     resourceSocket.close() 
 
-def UploadFileToResource(aes, sessionToken, filePath):
+def UploadFileToResource(aes, sessionToken, filePath, connectionPort):
     resourceSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    resourceSocket.connect(("127.0.0.1", SERVER_CONNECTION_PORT))
+    resourceSocket.connect(("127.0.0.1", connectionPort))
     
     fileID = os.path.basename(filePath)
     fileSize = os.path.getsize(filePath)
@@ -258,10 +260,10 @@ def UploadFileToResource(aes, sessionToken, filePath):
             bytesSent += min(65536, fileSize - bytesSent)
             nonceCounter += 1   
         
-def DeleteFileFromResource(aes, sessionToken, fileID):
+def DeleteFileFromResource(aes, sessionToken, fileID, connectionPort):
     #Defining the connection
     resourceSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    resourceSocket.connect(("127.0.0.1", SERVER_CONNECTION_PORT))
+    resourceSocket.connect(("127.0.0.1", connectionPort))
     
     #Filing the request
     requestNonce = os.urandom(12)
@@ -302,7 +304,7 @@ def CreateEphemeralECCKeypair():
     return privateEphemeralKey, publicEphemeralKey, privateEphemeralKeyBytes, publicEphemeralKeyBytes
 
 def LoginUser(username, password):
-    global certPath
+    global certPath, loggedIn
     passwordKeyring = keyring.get_password("Decentralised-File-System", username)
     ph = PasswordHasher()
     try:
@@ -312,8 +314,43 @@ def LoginUser(username, password):
         return
     
     certPath = os.path.join(os.getcwd(), f"User{username}Certificate.json")
+    loggedIn = True
 
 resourceSocket, aes, privateKey, publicKey, privateKeyBytes, publicKeyBytes = None, None, None, None, None, None
+
+def FetchAvailableFilesFromResource(aes, sessionToken, connectionPort):
+    resourceSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    resourceSocket.connect(("127.0.0.1", connectionPort))
+    
+    #Filing the request
+    requestNonce = os.urandom(12)
+    request = {"Nonce" : base64.b64encode(requestNonce).decode(), 
+               "ID" : userID,
+               "Type" : "File Availability Request", 
+               "Token" : base64.b64encode(aes.encrypt(requestNonce, json.dumps(sessionToken).encode(), None)).decode()}
+
+    resourceSocket.send(json.dumps(request).encode().ljust(1024, b"\0"))
+    
+    #Getting the return metadata
+    resourceReturnMetadataEncrypted = resourceSocket.recv(1024).rstrip(b"\0")
+    resourceReturnMetadata = json.loads(aes.decrypt(IncrementNonce(requestNonce, 2), resourceReturnMetadataEncrypted, None).decode())
+    logger.info(f"Resource Return Metadata from fetch : {resourceReturnMetadata}")
+    
+    resourceSocket.shutdown(socket.SHUT_RDWR)
+    resourceSocket.close() 
+    
+    conn = sqlite3.connect(CLIENT_DATABASE)
+    cursor = conn.cursor()
+    fileResults = resourceReturnMetadata["Results"]
+    for result in fileResults:
+        cursor.execute("""
+            INSERT INTO FileResourcePairings
+            (fileID, connectionPort) 
+            VALUES (?, ?)""",
+            (result, connectionPort)
+        )
+    conn.commit()
+    conn.close()
 
 def Start():
     global resourceSocket, aes, privateKey, publicKey, privateKeyBytes, publicKeyBytes
@@ -344,10 +381,65 @@ def Start():
     
     #Resrouce ephmeral pair
     privateEphemeralKey, _, _, publicEphemeralKeyBytes = CreateEphemeralECCKeypair()
-    aes, sessionToken = ConnectToResource(privateEphemeralKey, publicEphemeralKeyBytes)
-    #RequestFileFromResource(aes, sessionToken, "StunTest.py")
-    #UploadFileToResource(aes, sessionToken, "C:\\Users\\iniga\\OneDrive\\Programming\\StunTest.py")
-    DeleteFileFromResource(aes, sessionToken, "StunTest.py")
+    
+    #Starting up the CLI
+    running = True
+    while(running):
+        userInput = input().split("---")
 
-LoginUser("JohnSmith1", "John123")
+        if(userInput[0] == ".login"):
+            LoginUser(userInput[1],userInput[2])
+        
+        else:
+            if(not loggedIn):
+                print("Log in first!")
+        
+            elif(userInput[0] == ".fetch"):
+                connectionPort = int(userInput[1])
+                aes, sessionToken = ConnectToResource(privateEphemeralKey, publicEphemeralKeyBytes, connectionPort)
+                FetchAvailableFilesFromResource(aes, sessionToken, connectionPort)
+
+            elif(userInput[0] == ".request"):
+                conn = sqlite3.connect(CLIENT_DATABASE)
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM FileResourcePairings WHERE fileID = ?", (userInput[1],))
+                row = cursor.fetchone()
+                connectionPort = int(row[1])
+                aes, sessionToken = ConnectToResource(privateEphemeralKey, publicEphemeralKeyBytes, connectionPort)
+                RequestFileFromResource(aes, sessionToken, userInput[1], connectionPort)
+
+            elif(userInput[0] == ".upload"):
+                fileID = os.path.basename(userInput[1])
+                conn = sqlite3.connect(CLIENT_DATABASE)
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM FileResourcePairings WHERE fileID = ?", (fileID,))
+                row = cursor.fetchone()
+                connectionPort = int(row[1])
+                aes, sessionToken = ConnectToResource(privateEphemeralKey, publicEphemeralKeyBytes, connectionPort)
+                UploadFileToResource(aes, sessionToken, userInput[1], connectionPort)
+            
+            elif(userInput[0] == ".delete"):
+                conn = sqlite3.connect(CLIENT_DATABASE)
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM FileResourcePairings WHERE fileID = ?", (userInput[1],))
+                row = cursor.fetchone()
+                connectionPort = int(row[1])
+                aes, sessionToken = ConnectToResource(privateEphemeralKey, publicEphemeralKeyBytes, connectionPort)
+                DeleteFileFromResource(aes, sessionToken, "StunTest.py", connectionPort)
+
+            elif(userInput[0] == ".quit"):
+                running = False
+
+#Creating the database that knows where stuff is
+conn = sqlite3.connect(CLIENT_DATABASE)
+cursor = conn.cursor()
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS FileResourcePairings
+    (
+        fileID TEXT PRIMARY KEY,
+        connectionPort INT NOT NULL
+    )""")
+conn.commit()
+conn.close()
+
 Start()
